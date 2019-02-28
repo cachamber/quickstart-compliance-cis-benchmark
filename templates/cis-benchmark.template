@@ -1734,38 +1734,53 @@ Resources:
     Properties:
       FunctionName: CIS-EvaluateVpcDefaultSecurityGroups
       Description: Evaluates whether VPC default security groups restrict all traffic
-      Code:
-        ZipFile: |
-          import boto3
-          import json
-          def lambda_handler(event, context):
-            is_compliant = True
-            invoking_event = json.loads(event['invokingEvent'])
-            annotation = ''
-            security_group_id = invoking_event['configurationItem']['resourceId']
-            # Get security groups details
-            security_group = boto3.client('ec2').describe_security_groups(GroupIds=[security_group_id])['SecurityGroups']
-            # evaluate the default security groups compliance
-            if security_group[0]['GroupName'] == 'default':
-              if security_group[0]['IpPermissions']:
-                annotation = annotation + 'The security group has ingress rules in place.'
-                is_compliant = False
-              if security_group[0]['IpPermissionsEgress']:
-                annotation = annotation + ' The security group has egress rules in place.'
-                is_compliant = False
-              evaluations = [
-                {
-                  'ComplianceResourceType': invoking_event['configurationItem']['resourceType'],
-                  'ComplianceResourceId': security_group_id,
-                  'ComplianceType': 'COMPLIANT' if is_compliant else 'NON_COMPLIANT',
-                  'OrderingTimestamp': invoking_event['configurationItem']['configurationItemCaptureTime']
-                }
-              ]
-              if annotation: evaluations[0]['Annotation'] = annotation
-              response = boto3.client('config').put_evaluations(
-                Evaluations = evaluations,
-                ResultToken = event['resultToken']
-              )
+           Code:
+             ZipFile: |
+               import json
+               import boto3
+               annotation = ' '
+               def evaluate_compliance(configuration_item):
+                 global annotation
+                 if configuration_item['configurationItemStatus'] == "ResourceDeleted":
+                   annotation = 'The resource was deleted'
+                   return 'NOT_APPLICABLE'
+                 security_group_id = configuration_item['resourceId']
+                 # Get security groups details
+                 try:
+                   security_group = boto3.client('ec2').describe_security_groups(GroupIds=[security_group_id])['SecurityGroups']
+                 except:
+                   annotation = 'The resource was deleted'
+                   return 'NOT_APPLICABLE'
+                 # evaluate the default security groups compliance
+                 if security_group[0]['GroupName'] == 'default':
+                   if security_group[0]['IpPermissions']:
+                     annotation = annotation + 'The security group has ingress rules in place.'
+                     return 'NON_COMPLIANT'
+                   if security_group[0]['IpPermissionsEgress']:
+                     annotation = annotation + ' The security group has egress rules in place.'
+                     return 'NON_COMPLIANT'
+                   return 'COMPLIANT'
+                 return 'NOT_APPLICABLE'
+               def lambda_handler(event, context):
+                 invoking_event = json.loads(event['invokingEvent'])
+                 configuration_item = invoking_event['configurationItem']
+                 result_token = 'No token found.'
+                 global annotation
+                 if 'resultToken' in event:
+                     result_token = event['resultToken']
+                 config = boto3.client('config')
+                 response = config.put_evaluations(
+                     Evaluations = [
+                       {
+                         'ComplianceResourceType': configuration_item['resourceType'],
+                         'ComplianceResourceId': configuration_item['resourceId'],
+                         'ComplianceType': evaluate_compliance(configuration_item),
+                         'Annotation': annotation,
+                         'OrderingTimestamp': configuration_item['configurationItemCaptureTime']
+                       },
+                     ],
+                    ResultToken = result_token
+                  )
       Handler: index.lambda_handler
       MemorySize: 1024
       Role:
